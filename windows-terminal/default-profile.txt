@@ -1,0 +1,4 @@
+Windows Terminal is currently at default settings (the settings.dat registry hive contains no custom JSON).
+Manual step after install: open Windows Terminal > Settings (Ctrl+,) > "Starting destination" / set
+"Windows PowerShell" or "PowerShell" profile as Default profile (left dropdown), and optionally
+set the profile font face to "Cascadia Mono" or a bundled "MesloLGS Nerd Font" for eza/oh-my-posh icons.
