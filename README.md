@@ -29,7 +29,8 @@ terminal-backup/
 │   └── full-machine-export.json ← full `winget export` of this PC (reference only)
 ├── pwsh/
 │   ├── pwsh7.Microsoft.PowerShell_profile.ps1
-│   └── ps5.1.Microsoft.PowerShell_profile.ps1
+│   ├── ps5.1.Microsoft.PowerShell_profile.ps1
+│   └── legacy.WindowsPowerShell.CurrentUserAllHosts.profile.ps1  ← older 5.1 all-hosts profile, archived for reference (never installed)
 ├── atuin/config.toml
 ├── git/gitconfig
 ├── fonts/                       ← 72 installed Nerd Font faces + UbuntuMono variable
@@ -48,6 +49,18 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 Flags: `-SkipPackages` (configs only, no winget), `-SkipFonts`.
 
 The installer is idempotent; any file it replaces is first saved as `<file>.bak-<timestamp>`.
+It also moves any *current-user, all-hosts* profile (`Documents\PowerShell\profile.ps1`,
+`Documents\WindowsPowerShell\profile.ps1`) out of the way, because those load **before** the
+host-specific profiles from this repo and would otherwise run a second oh-my-posh + fastfetch startup.
+
+### Troubleshooting
+
+**The fastfetch banner prints twice.** PowerShell dot-sources up to four profiles, in this order:
+`AllUsersAllHosts` → `CurrentUserAllHosts` → `AllUsersCurrentHost` → `CurrentUserCurrentHost`
+(`$PROFILE` lists all four paths). Two of them printing a banner = two banners. Current-user files
+live in `Documents\PowerShell\` (pwsh 7) and `Documents\WindowsPowerShell\` (5.1); machine-level
+files live in the PowerShell install folder and need admin to change. Since `install.ps1` now
+disables leftovers at the all-hosts paths, re-running it fixes this.
 
 ### Manual steps afterwards (2 minutes)
 

@@ -14,7 +14,9 @@
       1. winget-installs the curated tool list (winget\terminal-packages.txt)
       2. Installs the bundled Meslo LG Nerd Fonts (per-user, no admin needed)
       3. Copies PowerShell 7 + Windows PowerShell 5.1 profiles to their
-         default locations
+         default locations, and disables any leftover current-user
+         all-hosts profile (…\profile.ps1) that would load on top of them
+         and duplicate the fastfetch banner
       4. Copies atuin config to %USERPROFILE%\.config\atuin\config.toml
       5. Copies gitconfig to %USERPROFILE%\.gitconfig (delta pager etc.)
       6. Copies Windows Terminal settings.dat into the WT Settings folder
@@ -210,6 +212,31 @@ foreach ($t in $profileTargets) {
     Write-Host ("    {0}: {1} -> {2}" -f $t.Label, $state, $t.Dst) -ForegroundColor $color
 }
 
+# PowerShell dot-sources the current-user ALL-HOSTS profiles (…\profile.ps1)
+# *before* the host-specific files installed above. A leftover from an older
+# setup usually carries its own oh-my-posh + fastfetch startup, which shows up
+# as a duplicated banner. This backup owns only the host-specific files, so any
+# all-hosts profile found here is moved aside (not deleted) to keep startups
+# single-banner and predictable.
+$allHostsProfiles = @(
+    @{ Dst = (Join-Path $HOME 'Documents\PowerShell\profile.ps1');
+       Label = 'PowerShell 7 (pwsh) current-user, all-hosts profile' }
+    @{ Dst = (Join-Path $HOME 'Documents\WindowsPowerShell\profile.ps1');
+       Label = 'Windows PowerShell 5.1 current-user, all-hosts profile' }
+)
+
+foreach ($t in $allHostsProfiles) {
+    if (-not (Test-Path $t.Dst)) {
+        Write-Host ("    {0}: none" -f $t.Label) -ForegroundColor DarkGray
+        continue
+    }
+
+    $moved = "$($t.Dst).bak-$Stamp"
+    Move-Item -LiteralPath $t.Dst -Destination $moved -Force
+    Write-Host ("    {0}: leftover found, disabled -> {1}" -f $t.Label, $moved) -ForegroundColor Yellow
+    $Notes += ("{0} was not created by this backup and was moved to '{1}'. Review it before re-enabling: anything there runs in addition to the profiles from this repo." -f $t.Label, $moved)
+}
+
 # ---------------------------------------------------------------------------
 # 4. atuin config
 # ---------------------------------------------------------------------------
@@ -250,7 +277,7 @@ if (-not (Test-Path $wtSettings)) {
 Write-Step 'Verification checklist'
 Write-Host @'
   [ ] Close all terminals, open Windows Terminal and start a "PowerShell" (pwsh) tab
-  [ ] Prompt shows the gruvbox Oh-My-Posh theme; fastfetch banner appears
+  [ ] Prompt shows the gruvbox Oh-My-Posh theme; fastfetch banner appears exactly once
   [ ] Type a partial command + UpArrow  -> history search (atuin/PSReadLine)
   [ ] ls / ll / lt                       -> eza listing with icons
   [ ] cat somefile                       -> bat
