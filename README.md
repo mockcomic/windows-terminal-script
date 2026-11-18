@@ -49,15 +49,15 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 
 The script starts with a menu:
 
-- **[1] Install** — restore this backup onto the PC. Takes a full snapshot of the
-  machine's current configs first, so the install itself is recoverable.
-- **[2] Backup** — snapshot the PC's current configs without changing anything.
-- **[3] Restore** — pick a snapshot and roll the configs back to it (a safety
-  snapshot of the present state is taken first, so restore is itself undoable).
+- **[1] Install** — set this PC up from the backup. Saves a backup of the
+  machine's current configs first, so the install itself is reversible.
+- **[2] Backup** — save the PC's current terminal configs without changing anything.
+- **[3] Restore** — pick a saved backup and put its configs back (a backup of
+  the present state is saved first, so restore is itself reversible).
 
-Snapshots live in `%LOCALAPPDATA%\terminal-setup\backups\<timestamp>\` (outside
-the repo folder, so re-cloning never deletes your rollbacks). In the installer
-menu the snapshot step can be skipped with `-SkipBackup`.
+Backups live in `%LOCALAPPDATA%\terminal-setup\backups\<timestamp>\` (outside
+the repo folder, so re-cloning never deletes your rollbacks). The pre-install
+backup can be skipped with `-SkipBackup`.
 
 Flags: `-Install` / `-Backup` / `-Restore` (skip the menu), `-SkipPackages`
 (configs only, no winget), `-SkipFonts`.
@@ -104,10 +104,11 @@ running (the two overlap on Super-key bindings).
 
 ### Restoring a previous state
 
-`install.ps1 -Restore` lists every snapshot with its timestamp and files and rolls
-the configs back to the one you pick. Snapshots also make a good place to fish a
-single file out of (`%LOCALAPPDATA%\terminal-setup\backups\`), even if you do not
-run a full restore. In-place `.bak-<timestamp>` copies are the second safety net.
+`install.ps1 -Restore` lists every saved backup with its timestamp and files
+and rolls the configs back to the one you pick. The backup folder is also a
+good place to fish a single file out of (`%LOCALAPPDATA%\terminal-setup\backups\`),
+even if you do not run a full restore. In-place `.bak-<timestamp>` copies are the
+second safety net.
 
 ### Not restored automatically (by design)
 

@@ -1,26 +1,26 @@
 <#
 .SYNOPSIS
     Restores the exact Windows Terminal + PowerShell 7 setup from this backup
-    on any Windows 10/11 machine, with a snapshot/restore safety net.
+    on any Windows 10/11 machine, with a backup/restore safety net.
 
 .USAGE
     powershell -ExecutionPolicy Bypass -File install.ps1
     powershell -ExecutionPolicy Bypass -File install.ps1 -Install       # skip the menu
-    powershell -ExecutionPolicy Bypass -File install.ps1 -Backup        # snapshot only
+    powershell -ExecutionPolicy Bypass -File install.ps1 -Backup        # backup only
     powershell -ExecutionPolicy Bypass -File install.ps1 -Restore       # restore only
     Flags -SkipPackages / -SkipFonts / -SkipBackup apply to the install path.
 
 .DESCRIPTION
     On start the script asks what to do:
-      [1] Install        restore this backup onto the machine
-      [2] Backup         snapshot the machine's current terminal configs
-      [3] Restore        roll the configs back to a snapshot
+      [1] Install        set this PC up from the backup
+      [2] Backup         save the machine's current terminal configs
+      [3] Restore        put configs back from a saved backup
 
-    Every snapshot lives under %LOCALAPPDATA%\terminal-setup\backups\<stamp>\
-    and captures the machine's .gitconfig, both PowerShell profiles, the atuin
+    Backups live under %LOCALAPPDATA%\terminal-setup\backups\<stamp>\
+    and capture the machine's .gitconfig, both PowerShell profiles, the atuin
     config and the Windows Terminal settings hive, so anything this script
     touches is recoverable by name, not just by diffing .bak files.
-    Install takes a snapshot automatically before changing anything.
+    Install saves a backup automatically before changing anything.
 
     Install is idempotent: identical files are skipped, and every file it
     replaces is additionally saved as *.bak-<timestamp> in place.
@@ -31,7 +31,7 @@
     then re-run for Windows Terminal" order from wiping your name/email.
 
     What install does:
-      0. Snapshots the machine's current configs (unless -SkipBackup)
+      0. Saves a backup of the machine's current configs (unless -SkipBackup)
       1. winget-installs the curated tool list (winget\terminal-packages.txt)
       2. Installs the bundled Meslo LG Nerd Fonts (per-user, no admin needed)
       3. Copies PowerShell 7 + Windows PowerShell 5.1 profiles to their
@@ -54,7 +54,7 @@ param(
     [switch]$Restore,      # go straight to the restore-picker action
     [switch]$SkipPackages, # skip the winget install loop
     [switch]$SkipFonts,    # skip the bundled font install
-    [switch]$SkipBackup    # install without the pre-install snapshot
+    [switch]$SkipBackup    # install without the pre-install backup
 )
 
 $ErrorActionPreference = 'Stop'
@@ -117,7 +117,7 @@ function Backup-CurrentConfigs {
         if (Test-Path -LiteralPath $targets[$k]) { $present[$k] = $targets[$k] }
     }
     if ($present.Count -eq 0) {
-        Write-Host '    nothing to snapshot yet (fresh machine) - skipped.' -ForegroundColor DarkGray
+        Write-Host '    nothing to back up yet (fresh machine) - skipped.' -ForegroundColor DarkGray
         return $null
     }
     $dir = Join-Path $BackupRoot $stamp
@@ -130,10 +130,10 @@ function Backup-CurrentConfigs {
     foreach ($k in $present.Keys) {
         try {
             Copy-WithFallback -Src $present[$k] -Dst (Join-Path $dir $k)
-            Write-Host ("    snapshotted: {0}" -f $k) -ForegroundColor DarkGray
+            Write-Host ("    saved: {0}" -f $k) -ForegroundColor DarkGray
         } catch {
-            Write-Host ("    [!] could not snapshot {0}: {1}" -f $k, $_.Exception.Message) -ForegroundColor Yellow
-            $Notes += "Snapshot of '$k' failed - that file was not captured into $dir."
+            Write-Host ("    [!] could not back up {0}: {1}" -f $k, $_.Exception.Message) -ForegroundColor Yellow
+            $Notes += "Backup of '$k' failed - that file was not saved into $dir."
         }
     }
     return $dir
@@ -145,16 +145,16 @@ function Restore-FromSnapshot {
        state. Files in the snapshot that match no known target are skipped
        with a note rather than written somewhere blind. #>
     if (-not (Test-Path $BackupRoot)) {
-        Write-Host '    no snapshots found - nothing to restore.' -ForegroundColor Yellow
+        Write-Host '    no saved backups found - nothing to restore.' -ForegroundColor Yellow
         return
     }
     $snaps = @(Get-ChildItem $BackupRoot -Directory | Sort-Object Name -Descending)
     if ($snaps.Count -eq 0) {
-        Write-Host '    no snapshots found - nothing to restore.' -ForegroundColor Yellow
+        Write-Host '    no saved backups found - nothing to restore.' -ForegroundColor Yellow
         return
     }
     Write-Host ''
-    Write-Host 'Available snapshots (newest first):' -ForegroundColor Cyan
+    Write-Host 'Saved backups (newest first):' -ForegroundColor Cyan
     $i = 0
     foreach ($s in $snaps) {
         $i++
@@ -162,7 +162,7 @@ function Restore-FromSnapshot {
         Write-Host ("  [{0}] {1}  ({2})" -f $i, $s.Name, $files)
     }
     Write-Host '  [0] cancel'
-    $pick = Read-Host "Restore which snapshot (0-$i)"
+    $pick = Read-Host "Restore which backup (0-$i)"
     if ($pick -notmatch '^\d+$' -or [int]$pick -lt 1 -or [int]$pick -gt $i) {
         Write-Host '    cancelled.' -ForegroundColor DarkGray
         return
@@ -177,8 +177,8 @@ function Restore-FromSnapshot {
 
     foreach ($f in (Get-ChildItem $chosen.FullName -File)) {
         if (-not $known.Contains($f.Name)) {
-            Write-Host ("    skipping unknown snapshot file: {0}" -f $f.Name) -ForegroundColor Yellow
-            $Notes += "Snapshot $($chosen.Name) contained unknown file '$($f.Name)' - left in the snapshot, not restored."
+            Write-Host ("    skipping unknown file in backup: {0}" -f $f.Name) -ForegroundColor Yellow
+            $Notes += "Backup $($chosen.Name) contained unknown file '$($f.Name)' - left in the backup folder, not restored."
             continue
         }
         $dst = $known[$f.Name]
@@ -189,9 +189,9 @@ function Restore-FromSnapshot {
         Copy-Item -LiteralPath $f.FullName -Destination $dst -Force
         Write-Host ("    restored: {0} -> {1}" -f $f.Name, $dst) -ForegroundColor Green
     }
-    Write-Host ("    restored from snapshot {0}" -f $chosen.Name) -ForegroundColor Green
+    Write-Host ("    restored from backup {0}" -f $chosen.Name) -ForegroundColor Green
     if ($null -ne $safety) {
-        Write-Host ("    previous state saved at {0}" -f $safety) -ForegroundColor DarkGray
+        Write-Host ("    previous state saved as a backup at {0}" -f $safety) -ForegroundColor DarkGray
     }
 }
 
@@ -255,7 +255,7 @@ function Install-GitConfigWithIdentity {
     }
 
     if ((Test-Path "$dst.bak-$Stamp") -and -not (Get-Command git -ErrorAction SilentlyContinue)) {
-        $Notes += 'An existing .gitconfig was replaced but git was not on PATH to detect a [user] identity. If your name/email disappeared, they are in the .bak copy next to it and in the pre-install snapshot.'
+        $Notes += 'An existing .gitconfig was replaced but git was not on PATH to detect a [user] identity. If your name/email disappeared, they are in the .bak copy next to it and in the pre-install backup.'
     }
     return $state
 }
@@ -286,14 +286,14 @@ function Get-FontDisplayName([string]$Path) {
 # ---------------------------------------------------------------------------
 Write-Host 'Windows Terminal setup installer' -ForegroundColor Green
 Write-Host "Backup source: $Root"
-Write-Host "Snapshot library: $BackupRoot"
+Write-Host "Backup library: $BackupRoot"
 
 $actions = @('install')
 if (-not $Install -and -not $Backup -and -not $Restore) {
     Write-Host ''
-    Write-Host '[1] Install - restore this backup onto this PC (takes a snapshot first)'
-    Write-Host '[2] Backup  - snapshot this PC''s current terminal configs'
-    Write-Host '[3] Restore - roll the configs back to a snapshot'
+    Write-Host '[1] Install - set up this PC from the backup (saves your current configs first)'
+    Write-Host '[2] Backup  - save this PC''s current terminal configs'
+    Write-Host '[3] Restore - put configs back from a saved backup'
     Write-Host '[0] Quit'
     $choice = Read-Host 'Choose an action'
     switch ($choice) {
@@ -313,26 +313,26 @@ if ($Restore) { $actions = @($actions + 'restore' | Select-Object -Unique) }
 foreach ($action in $actions) {
 
 if ($action -eq 'backup') {
-    Write-Step 'Snapshotting current terminal configs'
+    Write-Step 'Saving a backup of the current terminal configs'
     $dir = Backup-CurrentConfigs
     if ($null -ne $dir) {
-        Write-Host "    snapshot saved at $dir" -ForegroundColor Green
+        Write-Host "    backup saved at $dir" -ForegroundColor Green
     }
     continue
 }
 
 if ($action -eq 'restore') {
-    Write-Step 'Restoring terminal configs from a snapshot'
+    Write-Step 'Restoring terminal configs from a saved backup'
     Restore-FromSnapshot
     continue
 }
 
 # ------------------------------- install ----------------------------------
 if (-not $SkipBackup) {
-    Write-Step 'Pre-install snapshot of the current configs'
+    Write-Step 'Saving a backup of the current configs before installing'
     $dir = Backup-CurrentConfigs
     if ($null -ne $dir) {
-        Write-Host "    snapshot saved at $dir" -ForegroundColor Green
+        Write-Host "    backup saved at $dir" -ForegroundColor Green
     }
 }
 
@@ -515,7 +515,7 @@ Write-Step 'Installing Windows Terminal settings'
 
 $wtSettings = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\Settings'
 if (-not (Test-Path $wtSettings)) {
-    $Notes += 'Windows Terminal has never been launched on this PC yet - launch it once, then re-run install.ps1 to apply settings.dat. Re-running is safe: your git identity survives it now, and every re-run takes a fresh snapshot.'
+    $Notes += 'Windows Terminal has never been launched on this PC yet - launch it once, then re-run install.ps1 to apply settings.dat. Re-running is safe: your git identity survives it now, and every re-run saves a fresh backup first.'
     Write-Host '    Windows Terminal Settings folder not found (launch WT once, then re-run).' -ForegroundColor Yellow
 } else {
     $state = Copy-ConfigFile -Src (Join-Path $Root 'windows-terminal\settings.dat') -Dst (Join-Path $wtSettings 'settings.dat')
