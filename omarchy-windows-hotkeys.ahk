@@ -86,10 +86,10 @@ global GamingMode := false
 #!b::Run "brave.exe --new-window"
 
 ; Win + Shift + Y = YouTube app profile
-#+y::Run '"C:\Users\KH-PC\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe" --user-data-dir="C:\Users\KH-PC\AppData\Local\WebDesk\Profiles\youtube" --app=https://www.youtube.com --disable-gpu --no-first-run'
+#+y::Run '"' EnvGet("LOCALAPPDATA") '\BraveSoftware\Brave-Browser\Application\brave.exe" --user-data-dir="' EnvGet("LOCALAPPDATA") '\WebDesk\Profiles\youtube" --app=https://www.youtube.com --disable-gpu --no-first-run'
 
 ; Win + Shift + A = ChatGPT
-#+a::Run '"C:\Users\KH-PC\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe" --app=https://chatgpt.com/ --no-first-run'
+#+a::Run '"' EnvGet("LOCALAPPDATA") '\BraveSoftware\Brave-Browser\Application\brave.exe" --app=https://chatgpt.com/ --no-first-run'
 
 ; Win + Alt + C = VS Code
 #!c::Run "code"

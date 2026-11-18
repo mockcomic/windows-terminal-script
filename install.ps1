@@ -1,16 +1,37 @@
 <#
 .SYNOPSIS
     Restores the exact Windows Terminal + PowerShell 7 setup from this backup
-    on any Windows 10/11 machine.
+    on any Windows 10/11 machine, with a snapshot/restore safety net.
 
 .USAGE
     powershell -ExecutionPolicy Bypass -File install.ps1
+    powershell -ExecutionPolicy Bypass -File install.ps1 -Install       # skip the menu
+    powershell -ExecutionPolicy Bypass -File install.ps1 -Backup        # snapshot only
+    powershell -ExecutionPolicy Bypass -File install.ps1 -Restore       # restore only
+    Flags -SkipPackages / -SkipFonts / -SkipBackup apply to the install path.
 
 .DESCRIPTION
-    Idempotent: safe to run multiple times. Existing files are backed up as
-    *.bak-<timestamp> before being replaced (identical files are skipped).
+    On start the script asks what to do:
+      [1] Install        restore this backup onto the machine
+      [2] Backup         snapshot the machine's current terminal configs
+      [3] Restore        roll the configs back to a snapshot
 
-    What it does:
+    Every snapshot lives under %LOCALAPPDATA%\terminal-setup\backups\<stamp>\
+    and captures the machine's .gitconfig, both PowerShell profiles, the atuin
+    config and the Windows Terminal settings hive, so anything this script
+    touches is recoverable by name, not just by diffing .bak files.
+    Install takes a snapshot automatically before changing anything.
+
+    Install is idempotent: identical files are skipped, and every file it
+    replaces is additionally saved as *.bak-<timestamp> in place.
+
+    A .gitconfig that carries a [user] identity is MERGED, not replaced: the
+    delta/lfs settings come from this backup and your identity keys are
+    carried over. This is what keeps the README's "set your git identity,
+    then re-run for Windows Terminal" order from wiping your name/email.
+
+    What install does:
+      0. Snapshots the machine's current configs (unless -SkipBackup)
       1. winget-installs the curated tool list (winget\terminal-packages.txt)
       2. Installs the bundled Meslo LG Nerd Fonts (per-user, no admin needed)
       3. Copies PowerShell 7 + Windows PowerShell 5.1 profiles to their
@@ -18,29 +39,160 @@
          all-hosts profile (…\profile.ps1) that would load on top of them
          and duplicate the fastfetch banner
       4. Copies atuin config to %USERPROFILE%\.config\atuin\config.toml
-      5. Copies gitconfig to %USERPROFILE%\.gitconfig (delta pager etc.)
+      5. Merges gitconfig into %USERPROFILE%\.gitconfig (delta pager etc.)
       6. Copies Windows Terminal settings.dat into the WT Settings folder
          (only after Windows Terminal has been launched at least once)
 
-    Manual steps afterwards are listed in README.md (set pwsh as the default
-    Windows Terminal profile, fix git user/email, re-open your PC if the
-    font did not appear immediately).
+    Manual steps afterwards are listed in README.md (pick pwsh as the default
+    Windows Terminal profile, set your git identity if this box has none yet).
 #>
 
 [CmdletBinding()]
 param(
-    [switch]$SkipPackages,   # skip the winget install loop
-    [switch]$SkipFonts       # skip the bundled font install
+    [switch]$Install,      # go straight to the install action
+    [switch]$Backup,       # go straight to the backup action
+    [switch]$Restore,      # go straight to the restore-picker action
+    [switch]$SkipPackages, # skip the winget install loop
+    [switch]$SkipFonts,    # skip the bundled font install
+    [switch]$SkipBackup    # install without the pre-install snapshot
 )
 
 $ErrorActionPreference = 'Stop'
-$Root   = $PSScriptRoot
-$Stamp  = Get-Date -Format 'yyyyMMdd-HHmmss'
-$Notes  = [System.Collections.Generic.List[string]]::new()
+$Root  = $PSScriptRoot
+$Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$Notes = [System.Collections.Generic.List[string]]::new()
+
+# Machine-local snapshot library (deliberately outside the repo folder so
+# re-cloning or pulling the repo never deletes your rollbacks).
+$BackupRoot = Join-Path $env:LOCALAPPDATA 'terminal-setup\backups'
 
 function Write-Step([string]$Message) {
     Write-Host ''
     Write-Host "==> $Message" -ForegroundColor Cyan
+}
+
+# ---------------------------------------------------------------------------
+# Snapshot library: every target this script touches, by short name
+# ---------------------------------------------------------------------------
+function Get-SnapshotTargets {
+    $targets = [ordered]@{
+        'gitconfig'                = Join-Path $HOME '.gitconfig'
+        'profile-pwsh7'            = Join-Path $HOME 'Documents\PowerShell\Microsoft.PowerShell_profile.ps1'
+        'profile-ps51'             = Join-Path $HOME 'Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1'
+        'atuin-config'             = Join-Path $HOME '.config\atuin\config.toml'
+        'windows-terminal-settings' = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\Settings\settings.dat'
+    }
+    return $targets
+}
+
+function Copy-WithFallback {
+    <# Copy-Item first; if the source is locked (Windows Terminal holds
+       settings.dat open while running), fall back to robocopy, which
+       retries through sharing violations. #>
+    param([string]$Src, [string]$Dst)
+    try {
+        Copy-Item -LiteralPath $Src -Destination $Dst -Force -ErrorAction Stop
+    } catch {
+        $dir  = Split-Path $Dst -Parent
+        $name = Split-Path $Dst -Leaf
+        & robocopy.exe (Split-Path $Src -Parent) $dir (Split-Path $Src -Leaf) /R:3 /W:1 /NFL /NDL /NJH /NJS | Out-Null
+        $rob = Join-Path $dir (Split-Path $Src -Leaf)
+        if (Test-Path -LiteralPath $rob) {
+            if (Test-Path -LiteralPath $Dst) { Remove-Item -LiteralPath $Dst -Force }
+            Move-Item -LiteralPath $rob -Destination $Dst -Force
+        } else { throw }
+    }
+}
+
+function Backup-CurrentConfigs {
+    <# Copies every present target into a fresh timestamped folder (its OWN
+       timestamp - snapshots taken minutes apart within one run must never
+       collide, e.g. the safety snapshot a restore takes).
+       Returns the snapshot folder path, or $null when the machine has
+       nothing to snapshot (fresh PC - the honest no-op). #>
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $targets = Get-SnapshotTargets
+    $present = [ordered]@{}
+    foreach ($k in $targets.Keys) {
+        if (Test-Path -LiteralPath $targets[$k]) { $present[$k] = $targets[$k] }
+    }
+    if ($present.Count -eq 0) {
+        Write-Host '    nothing to snapshot yet (fresh machine) - skipped.' -ForegroundColor DarkGray
+        return $null
+    }
+    $dir = Join-Path $BackupRoot $stamp
+    $n = 1
+    while (Test-Path $dir) {
+        $n++
+        $dir = Join-Path $BackupRoot "$stamp-$n"
+    }
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    foreach ($k in $present.Keys) {
+        try {
+            Copy-WithFallback -Src $present[$k] -Dst (Join-Path $dir $k)
+            Write-Host ("    snapshotted: {0}" -f $k) -ForegroundColor DarkGray
+        } catch {
+            Write-Host ("    [!] could not snapshot {0}: {1}" -f $k, $_.Exception.Message) -ForegroundColor Yellow
+            $Notes += "Snapshot of '$k' failed - that file was not captured into $dir."
+        }
+    }
+    return $dir
+}
+
+function Restore-FromSnapshot {
+    <# Lists snapshots, lets the user pick one, and copies its files back to
+       their real locations after taking a safety snapshot of the present
+       state. Files in the snapshot that match no known target are skipped
+       with a note rather than written somewhere blind. #>
+    if (-not (Test-Path $BackupRoot)) {
+        Write-Host '    no snapshots found - nothing to restore.' -ForegroundColor Yellow
+        return
+    }
+    $snaps = @(Get-ChildItem $BackupRoot -Directory | Sort-Object Name -Descending)
+    if ($snaps.Count -eq 0) {
+        Write-Host '    no snapshots found - nothing to restore.' -ForegroundColor Yellow
+        return
+    }
+    Write-Host ''
+    Write-Host 'Available snapshots (newest first):' -ForegroundColor Cyan
+    $i = 0
+    foreach ($s in $snaps) {
+        $i++
+        $files = (Get-ChildItem $s.FullName -File | ForEach-Object { $_.Name }) -join ', '
+        Write-Host ("  [{0}] {1}  ({2})" -f $i, $s.Name, $files)
+    }
+    Write-Host '  [0] cancel'
+    $pick = Read-Host "Restore which snapshot (0-$i)"
+    if ($pick -notmatch '^\d+$' -or [int]$pick -lt 1 -or [int]$pick -gt $i) {
+        Write-Host '    cancelled.' -ForegroundColor DarkGray
+        return
+    }
+    $chosen = $snaps[[int]$pick - 1]
+
+    # Safety first: the state we are leaving behind is itself snapshotted.
+    $safety = Backup-CurrentConfigs
+
+    $known = @{}
+    foreach ($k in (Get-SnapshotTargets).Keys) { $known[$k] = (Get-SnapshotTargets)[$k] }
+
+    foreach ($f in (Get-ChildItem $chosen.FullName -File)) {
+        if (-not $known.Contains($f.Name)) {
+            Write-Host ("    skipping unknown snapshot file: {0}" -f $f.Name) -ForegroundColor Yellow
+            $Notes += "Snapshot $($chosen.Name) contained unknown file '$($f.Name)' - left in the snapshot, not restored."
+            continue
+        }
+        $dst = $known[$f.Name]
+        $dstDir = Split-Path $dst -Parent
+        if (-not (Test-Path $dstDir)) {
+            New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
+        }
+        Copy-Item -LiteralPath $f.FullName -Destination $dst -Force
+        Write-Host ("    restored: {0} -> {1}" -f $f.Name, $dst) -ForegroundColor Green
+    }
+    Write-Host ("    restored from snapshot {0}" -f $chosen.Name) -ForegroundColor Green
+    if ($null -ne $safety) {
+        Write-Host ("    previous state saved at {0}" -f $safety) -ForegroundColor DarkGray
+    }
 }
 
 function Copy-ConfigFile {
@@ -69,6 +221,45 @@ function Copy-ConfigFile {
     return 'installed'
 }
 
+function Install-GitConfigWithIdentity {
+    <# Installs git\gitconfig without destroying a [user] identity the
+       machine already has: when the current .gitconfig carries user.* keys
+       and git is on PATH, they are re-written onto the freshly installed
+       file with `git config --file` (git's own writer, no ini parsing here).
+       The old file is .bak'd by Copy-ConfigFile either way, and a full
+       snapshot exists from the pre-install step. Falls back to a plain
+       replace (plus a loud note) when git is not on PATH yet - e.g. during
+       a -SkipPackages run on a machine that has no git.
+       Returns 'identical' | 'installed' | 'replaced' | 'merged'. #>
+    $src = Join-Path $Root 'git\gitconfig'
+    $dst = Join-Path $HOME '.gitconfig'
+    if (Test-Path $dst) {
+        $same = (Get-FileHash $src).Hash -eq (Get-FileHash $dst).Hash
+        if ($same) { return 'identical' }
+    }
+
+    $identity = @()
+    if ((Test-Path $dst) -and (Get-Command git -ErrorAction SilentlyContinue)) {
+        $identity = @(& git config --file $dst --get-regexp '^user\.' 2>$null)
+    }
+
+    $state = Copy-ConfigFile -Src $src -Dst $dst
+
+    if ($identity.Count -gt 0) {
+        foreach ($line in $identity) {
+            $key, $value = $line -split ' ', 2
+            & git config --file $dst $key $value
+        }
+        Write-Host "    existing git identity carried over ($($identity.Count) keys)" -ForegroundColor Green
+        return 'merged'
+    }
+
+    if ((Test-Path "$dst.bak-$Stamp") -and -not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $Notes += 'An existing .gitconfig was replaced but git was not on PATH to detect a [user] identity. If your name/email disappeared, they are in the .bak copy next to it and in the pre-install snapshot.'
+    }
+    return $state
+}
+
 function Get-FontDisplayName([string]$Path) {
     <# Returns the registry value name (e.g. "MesloLGS Nerd Font Regular (TrueType)")
        by reading the real name table out of the font file. #>
@@ -90,8 +281,60 @@ function Get-FontDisplayName([string]$Path) {
     return "$($base -replace '-', ' ') (TrueType)"
 }
 
+# ---------------------------------------------------------------------------
+# Action menu
+# ---------------------------------------------------------------------------
 Write-Host 'Windows Terminal setup installer' -ForegroundColor Green
 Write-Host "Backup source: $Root"
+Write-Host "Snapshot library: $BackupRoot"
+
+$actions = @('install')
+if (-not $Install -and -not $Backup -and -not $Restore) {
+    Write-Host ''
+    Write-Host '[1] Install - restore this backup onto this PC (takes a snapshot first)'
+    Write-Host '[2] Backup  - snapshot this PC''s current terminal configs'
+    Write-Host '[3] Restore - roll the configs back to a snapshot'
+    Write-Host '[0] Quit'
+    $choice = Read-Host 'Choose an action'
+    switch ($choice) {
+        '1' { $actions = @('install') }
+        '2' { $actions = @('backup') }
+        '3' { $actions = @('restore') }
+        default {
+            Write-Host 'Bye.' -ForegroundColor DarkGray
+            exit 0
+        }
+    }
+}
+if ($Install) { $actions = @('install') }
+if ($Backup)  { $actions = @($actions + 'backup'  | Select-Object -Unique) }
+if ($Restore) { $actions = @($actions + 'restore' | Select-Object -Unique) }
+
+foreach ($action in $actions) {
+
+if ($action -eq 'backup') {
+    Write-Step 'Snapshotting current terminal configs'
+    $dir = Backup-CurrentConfigs
+    if ($null -ne $dir) {
+        Write-Host "    snapshot saved at $dir" -ForegroundColor Green
+    }
+    continue
+}
+
+if ($action -eq 'restore') {
+    Write-Step 'Restoring terminal configs from a snapshot'
+    Restore-FromSnapshot
+    continue
+}
+
+# ------------------------------- install ----------------------------------
+if (-not $SkipBackup) {
+    Write-Step 'Pre-install snapshot of the current configs'
+    $dir = Backup-CurrentConfigs
+    if ($null -ne $dir) {
+        Write-Host "    snapshot saved at $dir" -ForegroundColor Green
+    }
+}
 
 # ---------------------------------------------------------------------------
 # 1. Packages (winget)
@@ -160,24 +403,32 @@ public static extern IntPtr SendMessageTimeout(
     $fonts = Get-ChildItem (Join-Path $Root 'fonts') -Filter '*.ttf' -File
     if (-not $fonts) { $fonts = Get-ChildItem (Join-Path $Root 'fonts') -Filter '*.otf' -File }
 
-    $installedCount = 0
+    $regValues = @((Get-Item $regKey).Property)
+    $copiedCount = 0
+    $registeredCount = 0
     foreach ($f in $fonts) {
         $target = Join-Path $fontDir $f.Name
-        if ((Test-Path $target) -and
-            ((Get-FileHash $f.FullName).Hash -eq (Get-FileHash $target).Hash)) {
-            $installedCount++
-            continue
+        $presentOnDisk = (Test-Path $target) -and
+            ((Get-FileHash $f.FullName).Hash -eq (Get-FileHash $target).Hash)
+
+        if (-not $presentOnDisk) {
+            Copy-Item $f.FullName $target -Force
+            $copiedCount++
         }
-        Copy-Item $f.FullName $target -Force
 
+        # Register even when the bytes were already on disk: a font copied
+        # there by another route has no HKCU entry and stays invisible to
+        # apps until it does. Only notify for names not yet registered.
         $displayName = Get-FontDisplayName $target
-        New-ItemProperty -Path $regKey -Name $displayName -Value $target -PropertyType String -Force | Out-Null
-
-        try   { [Win32.FontNotify]::AddFontResourceEx($target, 0, [IntPtr]::Zero) | Out-Null } catch { }
-        $installedCount++
+        if ($regValues -notcontains $displayName) {
+            New-ItemProperty -Path $regKey -Name $displayName -Value $target -PropertyType String -Force | Out-Null
+            $regValues += $displayName
+            try   { [Win32.FontNotify]::AddFontResourceEx($target, 0, [IntPtr]::Zero) | Out-Null } catch { }
+            $registeredCount++
+        }
     }
 
-    if ($installedCount) {
+    if ($registeredCount) {
         try {
             $hwndBroadcast = [IntPtr]0xffff
             $result = [IntPtr]::Zero
@@ -186,7 +437,7 @@ public static extern IntPtr SendMessageTimeout(
         } catch { }
     }
 
-    Write-Host "    $installedCount / $($fonts.Count) fonts present for this user."
+    Write-Host "    $copiedCount / $($fonts.Count) font files copied, $registeredCount newly registered for this user."
     $Notes += 'If a font does not appear in Windows Terminal right away, sign out and back in (or reboot) once.'
 } else {
     Write-Host '(-SkipFonts: font step skipped)' -ForegroundColor DarkGray
@@ -247,14 +498,15 @@ $state = Copy-ConfigFile -Src (Join-Path $Root 'atuin\config.toml') -Dst $atuinD
 Write-Host "    atuin config: $state -> $atuinDst"
 
 # ---------------------------------------------------------------------------
-# 5. git config (delta pager, side-by-side diffs, zdiff3)
+# 5. git config (delta pager, side-by-side diffs, zdiff3) - identity-safe
 # ---------------------------------------------------------------------------
-Write-Step 'Installing git config'
+Write-Step 'Installing git config (identity-preserving)'
 
-$gitDst = Join-Path $HOME '.gitconfig'
-$state = Copy-ConfigFile -Src (Join-Path $Root 'git\gitconfig') -Dst $gitDst
-Write-Host "    gitconfig: $state -> $gitDst"
-$Notes += 'No git identity in the backup (kept out on purpose). Set it once: git config --global user.name "Your Name"; git config --global user.email you@example.com'
+$state = Install-GitConfigWithIdentity
+Write-Host "    gitconfig: $state -> $(Join-Path $HOME '.gitconfig')"
+if ($state -in @('installed', 'replaced')) {
+    $Notes += 'No git identity was found on this machine (the backup intentionally carries none). Set it once: git config --global user.name "Your Name"; git config --global user.email you@example.com'
+}
 
 # ---------------------------------------------------------------------------
 # 6. Windows Terminal settings hive
@@ -263,7 +515,7 @@ Write-Step 'Installing Windows Terminal settings'
 
 $wtSettings = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\Settings'
 if (-not (Test-Path $wtSettings)) {
-    $Notes += 'Windows Terminal has never been launched on this PC yet - launch it once, then re-run install.ps1 to apply settings.dat.'
+    $Notes += 'Windows Terminal has never been launched on this PC yet - launch it once, then re-run install.ps1 to apply settings.dat. Re-running is safe: your git identity survives it now, and every re-run takes a fresh snapshot.'
     Write-Host '    Windows Terminal Settings folder not found (launch WT once, then re-run).' -ForegroundColor Yellow
 } else {
     $state = Copy-ConfigFile -Src (Join-Path $Root 'windows-terminal\settings.dat') -Dst (Join-Path $wtSettings 'settings.dat')
@@ -293,3 +545,4 @@ if ($Notes.Count) {
 
 Write-Host ''
 Write-Host 'Done.' -ForegroundColor Green
+}

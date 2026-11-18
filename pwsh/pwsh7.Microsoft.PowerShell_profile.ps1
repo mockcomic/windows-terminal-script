@@ -1,7 +1,9 @@
 # -----------------------------
 # Prompt / Theme
 # -----------------------------
-oh-my-posh init pwsh --config "gruvbox" | Invoke-Expression
+if (Get-Command oh-my-posh -ErrorAction SilentlyContinue) {
+    oh-my-posh init pwsh --config "gruvbox" | Invoke-Expression
+}
 
 
 # -----------------------------
@@ -347,7 +349,13 @@ function download {
 # Recycle Bin
 # -----------------------------
 function emptytrash {
-    Clear-RecycleBin -Force
+    # Clear-RecycleBin throws when the bin is already empty; that is a
+    # success case, not an error.
+    try {
+        Clear-RecycleBin -Force -ErrorAction Stop
+    } catch {
+        Write-Verbose "Recycle Bin was already empty."
+    }
     Write-Host "Recycle Bin emptied."
 }
 
@@ -355,7 +363,7 @@ function emptytrash {
 # -----------------------------
 # Launch fastfetch when opening an interactive terminal
 # -----------------------------
-if ($Host.Name -eq "ConsoleHost") {
+if ($Host.Name -eq "ConsoleHost" -and -not [Console]::IsOutputRedirected) {
     ff
 }
 
