@@ -4,6 +4,8 @@ A complete, portable snapshot of this PC's terminal environment (taken 2026-10-2
 Copy this whole folder to any Windows 10/11 machine (zip it, push it to a GitHub repo, USB stick…)
 and run one script to get the identical setup.
 
+![The terminal after install.ps1 finishes: Windows Terminal running PowerShell 7 with the gruvbox Oh My Posh prompt and the fastfetch banner](assets/after-install.png)
+
 ## What the setup is
 
 | Component | Detail |
