@@ -17,7 +17,7 @@ and run one script to get the identical setup.
 | Navigation | **zoxide** (`z` / `zi`), `cd` auto-lists with **eza**, `cdf`/`openfdir`/`codefdir` via **fzf + fd** |
 | Replacements | `ls`/`ll`/`la`/`lt` → **eza** (icons+git), `cat` → **bat**, `grep` → **ripgrep**, `find` → **fd**, `ff` → **fastfetch** (runs on shell start) |
 | Git diffs | **delta** as `core.pager` (side-by-side, navigate) + `zdiff3` conflict style, **lazygit** |
-| TUIs / extras | **yazi** (file manager, with `file.exe` MIME helper from Git for Windows), **nano**, **glazewm** (window manager), **mise** (tool manager) |
+| TUIs / extras | **yazi** (file manager, with `file.exe` MIME helper from Git for Windows), **nano**, **mise** (tool manager) |
 | Handy profile functions | `download <url> [name]`, `emptytrash`, `deepseek` / `deepseek-update` (DeepSeek Harness launcher; repo path is now `$HOME\AI\deepseek-harness`) |
 | Fonts | Full **Meslo LG Nerd Font** family (Mono/Propo, L/LDZ/MDZ/M/S) — 72 faces, required for eza icons & prompt glyphs |
 
@@ -101,8 +101,8 @@ disables leftovers at the all-hosts paths, re-running it fixes this.
 `omarchy-windows-hotkeys.ahk` is a Super-key (Win) keymap in the Omarchy style —
 launcher, workspace switching, gaming-mode toggle, Brave app shortcuts. It is *not*
 installed by `install.ps1`: install [AutoHotkey v2](https://www.autohotkey.com/) and
-add the file to your Startup folder if you want it. It assumes glazewm is **not**
-running (the two overlap on Super-key bindings).
+add the file to your Startup folder if you want it. If you run a tiling window manager (glazewm or similar), note the two
+overlap on Super-key bindings.
 
 ### Restoring a previous state
 

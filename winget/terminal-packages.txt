@@ -14,5 +14,4 @@ dandavison.delta
 JesseDuffield.lazygit
 sxyazi.yazi
 okibcn.nano
-glzr-io.glazewm
 jdx.mise
